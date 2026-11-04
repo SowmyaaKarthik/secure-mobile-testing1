@@ -1,0 +1,1189 @@
+End-to-End Android Mobile Application Security Testing Lab
+Audience: Mobile application security learners and penetration
+testers  
+Platform: Windows host + Android Studio + Android Emulator + Kali
+Linux VM  
+Suggested duration: 5 days / 30--35 practical hours  
+Difficulty: Beginner to advanced
+1. Purpose and scope
+This manual builds a repeatable Android security-testing environment
+from the ground up. It covers Android Studio installation, SDK
+configuration, virtual-device creation, ADB connectivity, APK
+installation, reconnaissance, static analysis, dynamic observation,
+network analysis and advanced tooling.
+Authorisation and safety: Test only applications, emulators, APIs
+and networks that you own or are explicitly authorised to assess. Use
+intentionally vulnerable training applications and synthetic data. Do
+not use real customer credentials, personal data or production accounts.
+Learning outcomes
+By completing the labs, learners should be able to:
+Install and configure Android Studio and the Android SDK.
+Create and operate an Android Virtual Device (AVD).
+Connect to an emulator using ADB.
+Inventory an application's package, permissions and components.
+Extract and inspect APK files.
+Perform initial static analysis with APKTool and JADX.
+Observe runtime behaviour and logs.
+Inspect authorised application traffic using Burp Suite and
+Wireshark.
+Use MobSF for automated analysis and validate its findings.
+Understand the roles of Frida and Objection in advanced dynamic
+analysis.
+Produce an evidence-based mobile application security report.
+---
+2. Reference lab architecture
+Recommended architecture
+Windows host: Android Studio, Android SDK, Android Emulator and
+AVD Manager.
+Kali Linux VM: JADX, APKTool, ADB (optional), Burp Suite,
+Wireshark, MobSF, Frida and Objection.
+Android Emulator: A virtual Pixel device running a selected
+Android release.
+Network: A controlled host-only or explicitly configured virtual
+network between Windows, Kali and the emulator.
+The emulator should run on Windows in this environment because Kali
+currently does not receive Intel VT-x (`vmx`) or `/dev/kvm`. Running the
+emulator inside Kali may therefore be slow or unable to use hardware
+acceleration.
+``` text
+                    WINDOWS HOST
++---------------------------------------------------+
+| Android Studio                                    |
+| Android SDK / Platform Tools / AVD Manager        |
+|                                                   |
+|              Android Emulator                    |
+|              Android OS + Test APK               |
++-----------------------|---------------------------+
+                        |
+             Controlled virtual network
+                        |
++-----------------------|---------------------------+
+|                    KALI LINUX VM                  |
+|                                                   |
+| ADB | JADX | APKTool | MobSF | Burp Suite         |
+| Frida | Objection | Wireshark | Evidence/Reports  |
++---------------------------------------------------+
+```
+Networking note
+The Android Emulator special address `10.0.2.2` refers to the Windows
+host from inside the emulator. It does not automatically refer to
+Kali. For a proxy running in Kali, configure an address reachable from
+the emulator and verify routing before configuring Burp. `127.0.0.1` on
+Windows, Kali and the emulator refers to each environment itself.
+---
+PART A --- WINDOWS AND ANDROID STUDIO SETUP
+Lab 1 --- Verify Windows host readiness
+Objective: Confirm that the host can run Android Studio and an
+accelerated emulator.
+1.1 Check Windows and hardware
+Open PowerShell:
+``` powershell
+Get-ComputerInfo | Select-Object WindowsProductName, WindowsVersion, OsArchitecture
+```
+Check memory:
+``` powershell
+Get-CimInstance Win32_ComputerSystem |
+  Select-Object @{Name="RAM_GB";Expression={[math]::Round($_.TotalPhysicalMemory / 1GB, 1)}}
+```
+Check CPU:
+``` powershell
+Get-CimInstance Win32_Processor |
+  Select-Object Name, NumberOfCores, NumberOfLogicalProcessors
+```
+1.2 Check virtualization
+Open Task Manager → Performance → CPU and inspect Virtualization.
+Also run:
+``` powershell
+systeminfo.exe
+```
+If Windows reports that a hypervisor has been detected, Windows is
+already running a hypervisor layer. This is not necessarily a problem
+for the Windows Android Emulator; it can use Windows Hypervisor Platform
+(WHPX) when configured and supported.
+1.3 Check Windows Hypervisor Platform
+Open Turn Windows features on or off and inspect Windows
+Hypervisor Platform.
+Do not routinely disable Hyper-V, Virtual Machine Platform, VBS or
+Memory Integrity. Diagnose emulator errors before changing host security
+settings.
+1.4 Capacity planning
+---
+Resource                                             Suggested baseline
+---
+Host RAM                                     16 GB minimum for a modest
+single-emulator workflow; 32 GB
+preferred
+Free disk                      30--50 GB for Studio, SDK, system images
+and lab files
+Emulator count                                        One AVD initially
+Kali VM RAM                      2--4 GB initially; adjust to available
+host RAM
+Kali VM CPU                                           2 vCPUs initially
+Do not allocate nearly all host memory to Kali while Android Studio and
+the emulator are running.
+Learner task: Record Windows version, CPU, RAM, free disk,
+virtualization status and whether Windows Hypervisor Platform is
+enabled. Save a screenshot of Task Manager → Performance → CPU.
+---
+Lab 2 --- Download and install Android Studio
+Objective: Install Android Studio and the Android SDK on Windows.
+Official download: https://developer.android.com/studio
+2.1 Installation
+Download the Windows installer from the official Android Developers
+website.
+Run the installer.
+Choose Custom if you want to review the components.
+Select Android Studio, Android SDK and Android Virtual
+Device/Emulator where offered.
+Keep the default SDK path unless storage requires a change.
+Accept the SDK licences and allow downloads to complete.
+Open Android Studio and confirm the Welcome screen appears.
+A common SDK location is:
+``` text
+C:\Users\<username>\AppData\Local\Android\Sdk
+```
+Record the actual path shown by Android Studio. Some components are
+installed later through SDK Manager rather than the initial wizard.
+2.2 SDK Manager
+Open More Actions → SDK Manager or Settings → Languages &
+Frameworks → Android SDK.
+Under SDK Platforms, install a stable platform selected for the
+course.
+Under SDK Tools, verify:
+Android SDK Platform-Tools
+Android SDK Build-Tools
+Android Emulator
+Android SDK Command-line Tools (latest)
+Use an Android version supported by the selected training APK. Older
+vulnerable apps may not work on the newest Android release.
+2.3 Verify tools in PowerShell
+Replace the path if your SDK is elsewhere:
+``` powershell
+$env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
+$env:Path += ";$env:ANDROID_HOME\platform-tools"
+adb version
+```
+Check emulator:
+``` powershell
+& "$env:ANDROID_HOME\emulator\emulator.exe" -version
+```
+Learner task: Record Android Studio version, SDK path, installed
+platform/API, Platform-Tools version and Emulator version.
+---
+Lab 3 --- Create an Android Virtual Device
+Objective: Create a virtual Android device for repeatable testing
+without using a personal phone.
+3.1 Create the AVD
+Open More Actions → Virtual Device Manager or Tools → Device
+Manager.
+Select Create Device.
+Choose a Pixel profile, such as Pixel 6 or an available equivalent.
+Select a compatible system image.
+Prefer an x86_64 image where available and compatible with the host.
+A Google APIs image is useful for many training scenarios. Google
+Play images may have additional restrictions.
+Suggested starting configuration:
+Setting           Initial value
+---
+Device            Pixel 6 or available Pixel profile
+Image             x86_64 where available
+Android version   Android 14 / API 34 if available and compatible
+RAM               2 GB initially
+Graphics          Automatic / Hardware where stable
+Orientation       Portrait
+Exact images depend on the installed Android Studio version and host.
+3.2 Boot and inspect
+Name the AVD `MobileSecurity_API34`.
+Finish the wizard.
+Start the emulator.
+Wait for the Android home screen.
+Open Settings → About emulated device.
+Record Android version, API level, model and build.
+3.3 Check acceleration
+In PowerShell:
+``` powershell
+& "$env:ANDROID_HOME\emulator\emulator.exe" -accel-check
+```
+Interpret the output for your installed Emulator version. If
+acceleration is unavailable, check firmware virtualization, WHPX
+configuration, emulator diagnostics, system-image compatibility and
+available RAM. Do not immediately disable Windows security features.
+3.4 Reset and snapshot strategy
+Keep one clean baseline AVD. Use snapshots or Wipe Data between
+exercises to restore a known state.
+Learner task: Boot the AVD, identify Android/API information and
+capture a screenshot.
+---
+PART B --- ADB AND KALI CONNECTIVITY
+Lab 4 --- Configure Android Debug Bridge
+Objective: Establish reliable ADB access to the emulator.
+ADB is part of Android SDK Platform-Tools. It supports application
+installation, package inspection, log collection and shell interaction.
+4.1 Verify ADB on Windows
+With the emulator running, open PowerShell:
+``` powershell
+adb devices -l
+```
+Expected output resembles:
+``` text
+List of devices attached
+emulator-5554    device
+```
+If no device appears:
+``` powershell
+adb kill-server
+adb start-server
+adb devices -l
+```
+4.2 Install ADB on Kali if required
+``` bash
+sudo apt update
+sudo apt install -y adb
+adb version
+```
+If it is already installed, record the version.
+4.3 Understand two connection patterns
+Pattern A --- Windows ADB: Windows ADB controls the local Windows
+emulator. Transfer the APK to Kali for analysis. This is the simplest
+initial workflow.
+Pattern B --- Kali ADB: Kali ADB connects to the Windows-hosted
+emulator over a controlled network. This allows Kali commands and
+scripts to control the device, but requires a reachable ADB endpoint and
+appropriate firewall/network configuration.
+Do not assume the emulator ADB port is reachable from another VM by
+default.
+4.4 Optional ADB TCP connection
+On Windows PowerShell, with the emulator connected:
+``` powershell
+adb devices
+adb tcpip 5555
+```
+Find the Windows address on the network shared with Kali:
+``` powershell
+ipconfig
+```
+Use the address belonging to the correct host-only or explicitly
+configured adapter.
+From Kali:
+``` bash
+adb connect <WINDOWS_HOST_IP>:5555
+adb devices -l
+```
+Replace the placeholder with the actual reachable address.
+If it fails, verify the VirtualBox network mode, routing, Windows
+Firewall, ADB listener and selected adapter. Do not expose ADB to a
+public or untrusted network. Disable the TCP debugging exposure after
+the exercise if it is no longer required.
+4.5 Verify shell access
+``` bash
+adb shell getprop ro.build.version.release
+adb shell getprop ro.build.version.sdk
+adb shell getprop ro.product.model
+adb shell pm list packages
+```
+Learner task: Demonstrate device connection, OS/API discovery,
+package enumeration and ADB shell access. Save the command output.
+---
+Lab 5 --- Install and launch a training APK
+Objective: Install an intentionally vulnerable application and
+establish a repeatable test target.
+5.1 Select an approved training app
+Possible educational targets:
+DIVA (Damn Insecure and Vulnerable App)
+InsecureBankv2, if its source/build and use are reviewed and
+approved
+A client-provided training APK
+DIVA project: https://github.com/payatu/diva-android
+Review the repository, licence, build/release instructions and APK
+provenance. Do not download random APKs from untrusted mirrors.
+5.2 Install the APK
+If the APK is on Windows:
+``` powershell
+adb install -r "C:\Lab\DIVA.apk"
+```
+If it is on Kali and Kali ADB is connected:
+``` bash
+adb install -r DIVA.apk
+```
+Expected output:
+``` text
+Performing Streamed Install
+Success
+```
+If installation fails, record the exact error. Common causes include
+incompatible Android version, CPU architecture mismatch, signature
+conflict, minimum SDK requirement or invalid APK.
+5.3 Identify and launch the package
+``` bash
+adb shell pm list packages -3
+```
+Use the actual package name. If known:
+``` bash
+adb shell monkey -p <PACKAGE_NAME> 1
+```
+Explore the app manually and record:
+Main screens
+Login/registration
+Input fields
+Storage-related features
+Network features
+File upload/download
+Export/share
+Sensitive data displayed
+Permission prompts
+Use synthetic values only.
+Learner task: Prepare a screen/feature inventory with at least five
+features and the data each feature handles.
+---
+PART C --- MOBILE SECURITY FUNDAMENTALS AND RECONNAISSANCE
+Lab 6 --- Android device reconnaissance
+Objective: Collect platform information relevant to a security
+assessment.
+6.1 Android release and build
+``` bash
+adb shell getprop ro.build.version.release
+adb shell getprop ro.build.version.sdk
+adb shell getprop ro.build.fingerprint
+```
+6.2 Device identity
+``` bash
+adb shell getprop ro.product.manufacturer
+adb shell getprop ro.product.model
+adb shell getprop ro.product.cpu.abi
+```
+6.3 Security/build properties
+``` bash
+adb shell getprop ro.debuggable
+adb shell getprop ro.secure
+adb shell getenforce
+```
+Emulator images and production devices differ. Do not assume emulator
+properties represent production devices.
+6.4 Processes and packages
+``` bash
+adb shell ps -A
+adb shell pm list packages -3
+```
+6.5 Network configuration
+``` bash
+adb shell ip addr
+adb shell ip route
+```
+Learner task: Create a device reconnaissance sheet with at least ten
+observations and explain why each is useful.
+---
+Lab 7 --- Application attack surface mapping
+Objective: Identify application features, entry points, data flows
+and exposed components.
+7.1 Build a feature inventory
+---
+Feature        Input               Output         Data sensitivity    Follow-up test
+---
+Login          Username/password   Session/auth   High                Authentication
+result                             review
+Profile        User data           Profile        Medium/high         Authorization
+details                            review
+Search         Search term         Results        Context-dependent   Input validation
+File feature   File path/content   File operation Context-dependent   Storage review
+API feature    Request parameters  Server         Context-dependent   Communication
+response                           review
+Populate only features actually present in the target.
+7.2 Inspect package details
+``` bash
+adb shell pm list packages -3
+adb shell dumpsys package <PACKAGE_NAME>
+```
+Review package/version, requested permissions, activities, services,
+receivers, providers, install location and application flags.
+7.3 Identify APK path
+``` bash
+adb shell pm path <PACKAGE_NAME>
+```
+Pull the base APK:
+``` bash
+adb pull <RETURNED_APK_PATH> target.apk
+```
+Some applications use split APKs. If multiple paths are returned,
+preserve and pull the relevant splits.
+7.4 Component review
+The manifest is the primary source for component declarations. Do not
+conclude that an exported component is exploitable merely because it is
+exported. Determine whether access is protected by permissions,
+authentication, caller checks and input validation.
+Learner challenge: Select one activity, service, receiver or
+provider and document its name, exported status, required permission,
+possible external interaction and evidence needed to validate
+exploitability.
+---
+Lab 8 --- Permission analysis
+Objective: Determine whether permissions are necessary and
+proportionate.
+8.1 Inspect package permissions
+``` bash
+adb shell dumpsys package <PACKAGE_NAME>
+```
+Alternatively, inspect the decoded manifest in Lab 11.
+8.2 Permission review table
+---
+Permission             Possible purpose  Data accessed     Risk if misused
+---
+INTERNET               Backend           Network data      Data exposure
+communication
+CAMERA                 Camera feature    Images/video      Privacy impact
+RECORD_AUDIO           Audio feature     Microphone        Privacy impact
+ACCESS_FINE_LOCATION   Location feature  Precise location  Tracking/privacy
+READ_CONTACTS          Contact feature   Address book      Data disclosure
+Permissions are not automatically vulnerabilities. Consider business
+necessity, runtime controls, data handling and least privilege.
+8.3 Inspect runtime permissions
+On the emulator:
+Open Settings.
+Open Apps.
+Select the training app.
+Open Permissions.
+Review allowed and denied permissions.
+Compare with manifest declarations.
+Learner challenge: Identify two permissions needing a clear business
+justification. Explain whether the app could function without them.
+---
+Lab 9 --- OWASP Mobile Top 10 and MASVS mapping
+Objective: Map observations to recognised mobile application
+security guidance.
+References:
+OWASP MASVS: https://mas.owasp.org/MASVS/
+OWASP MASTG: https://mas.owasp.org/MASTG/
+OWASP Mobile Top 10: https://owasp.org/www-project-mobile-top-10/
+OWASP Mobile Top 10 2024:
+ID    Category
+---
+M1    Improper Credential Usage
+M2    Inadequate Supply Chain Security
+M3    Insecure Authentication/Authorization
+M4    Insufficient Input/Output Validation
+M5    Insecure Communication
+M6    Inadequate Privacy Controls
+M7    Insufficient Binary Protections
+M8    Security Misconfiguration
+M9    Insecure Data Storage
+M10   Insufficient Cryptography
+Practical exercise
+For each category, record:
+What the risk means
+Evidence that may indicate the risk
+Tool or test used to investigate it
+Additional validation required
+Possible remediation
+Do not mark an OWASP category as confirmed solely because a scanner
+displays a warning.
+---
+PART D --- APK STATIC ANALYSIS
+Lab 10 --- APK structure and metadata
+Objective: Understand the APK format and extract metadata.
+10.1 Create workspace
+``` bash
+mkdir -p ~/MobileSecurity/{APK,Decoded,JADX,Traffic,Reports,Evidence}
+```
+Copy the authorised APK into `~/MobileSecurity/APK/`, then:
+``` bash
+cd ~/MobileSecurity/APK
+sha256sum target.apk
+```
+10.2 Inspect archive contents
+``` bash
+unzip -l target.apk | head -80
+```
+Look for:
+`AndroidManifest.xml`
+`classes.dex`
+`resources.arsc`
+`res/`
+`assets/`
+`lib/`
+10.3 Inspect metadata
+If Android Build Tools are installed:
+``` bash
+aapt dump badging target.apk
+```
+Review package identifier, version name/code, SDK information,
+application label and launchable activity.
+10.4 Identify DEX files
+``` bash
+unzip -l target.apk | grep -E 'classes.*dex'
+```
+DEX files contain Android bytecode and are a major source for
+reverse-engineering analysis.
+Learner task: Prepare an APK metadata report with hash, package,
+version, SDK requirements and key archive entries.
+---
+Lab 11 --- Decode APK using APKTool
+Objective: Decode the manifest and resources for review.
+11.1 Verify APKTool
+``` bash
+apktool --version
+```
+If unavailable on Kali:
+``` bash
+sudo apt update
+sudo apt install -y apktool
+```
+11.2 Decode
+``` bash
+apktool d target.apk -o target_decoded
+```
+11.3 Review manifest
+``` bash
+less target_decoded/AndroidManifest.xml
+```
+Search key configuration:
+``` bash
+grep -nE 'uses-permission|activity|service|receiver|provider|exported|debuggable|allowBackup|usesCleartextTraffic' target_decoded/AndroidManifest.xml
+```
+11.4 Review resources and assets
+``` bash
+find target_decoded/res -maxdepth 2 -type f | head -60
+find target_decoded/assets -type f 2>/dev/null
+find target_decoded/lib -type f 2>/dev/null
+```
+Learner challenge: Identify three permissions, two components, one
+application configuration setting and one resource/asset of security
+interest. Record file paths and evidence.
+---
+Lab 12 --- Decompile with JADX
+Objective: Review reconstructed Java-like source and identify areas
+for further testing.
+12.1 Verify and launch
+``` bash
+jadx --version
+jadx-gui target.apk
+```
+Or export source:
+``` bash
+jadx -d jadx_output target.apk
+```
+12.2 Explore code
+Look for:
+Login/registration logic
+API client classes
+URL constants
+Database helpers
+File handling
+Cryptographic routines
+WebView usage
+Logging
+Authentication/session management
+12.3 Search for investigation leads
+``` bash
+grep -RniE 'https?://|password|secret|token|api[_-]?key|Authorization' jadx_output
+```
+Search decoded resources too:
+``` bash
+grep -RniE 'https?://|password|secret|token|api[_-]?key' target_decoded
+```
+A matching string is not automatically a vulnerability. Inspect context
+and determine whether a value is a real secret, test string, public
+endpoint or unused resource.
+12.4 Review WebView use
+``` bash
+grep -RniE 'WebView|setJavaScriptEnabled|addJavascriptInterface|loadUrl' jadx_output
+```
+Assess origin control, JavaScript settings, bridge exposure, navigation
+handling and data exposed to the page.
+12.5 Review logging
+``` bash
+grep -RniE 'Log\.|System\.out|printStackTrace' jadx_output
+```
+Inspect surrounding code to determine whether sensitive data could be
+written to logs.
+Learner challenge: Find three code locations needing further
+testing. Record class/method, file path, relevant context, security
+concern and dynamic validation required.
+---
+Lab 13 --- Initial insecure storage review
+Objective: Identify application storage locations and assess whether
+sensitive information may be stored insecurely.
+13.1 Understand sandboxing
+Explain private app data directories, app UID isolation, shared storage,
+debuggable builds and the difference between rooted/test environments
+and normal production devices.
+13.2 Understand access limitations
+``` bash
+adb shell pm path <PACKAGE_NAME>
+```
+On a non-rooted emulator, direct access to `/data/data/<PACKAGE_NAME>`
+may be denied. This is expected and should not be treated as a tool
+failure.
+13.3 Collect logs
+``` bash
+adb logcat -c
+```
+Perform a normal test action, then:
+``` bash
+adb logcat -d > application_log.txt
+grep -iE 'password|token|secret|auth|key' application_log.txt
+```
+Use synthetic values only. Do not collect or publish personal data.
+13.4 Review storage APIs in JADX
+Search for:
+``` text
+SharedPreferences
+SQLiteDatabase
+FileOutputStream
+openFileOutput
+getExternalFilesDir
+getExternalStorageDirectory
+```
+Learner challenge: Identify one storage mechanism, what data it
+stores, where it is stored and what protection is visible in the code.
+---
+PART E --- DYNAMIC ANALYSIS AND NETWORK TESTING
+Lab 14 --- ADB application lifecycle and runtime observation
+Objective: Operate the application through ADB and observe runtime
+behaviour.
+Launch:
+``` bash
+adb shell monkey -p <PACKAGE_NAME> 1
+```
+Force-stop:
+``` bash
+adb shell am force-stop <PACKAGE_NAME>
+```
+Inspect process:
+``` bash
+adb shell ps -A | grep <PACKAGE_NAME>
+```
+Collect logs:
+``` bash
+adb logcat -c
+```
+Perform one test action, then:
+``` bash
+adb logcat -d > application_log.txt
+```
+Inspect foreground activity:
+``` bash
+adb shell dumpsys activity activities
+```
+Output varies by Android version.
+Learner challenge: Perform five normal app actions and record
+action, visible result, relevant log output, unexpected behaviour and
+follow-up security test.
+---
+Lab 15 --- Mobile network reconnaissance
+Objective: Understand application communication behaviour.
+15.1 Device network information
+``` bash
+adb shell ip addr
+adb shell ip route
+```
+15.2 Connectivity test
+Use only an approved lab endpoint:
+``` bash
+adb shell ping -c 4 <APPROVED_TEST_HOST>
+```
+Some Android images do not include `ping`; use an approved alternative
+if necessary.
+15.3 Observe application behaviour
+Start a clean test session.
+Clear old proxy history.
+Launch the training application.
+Perform one feature at a time.
+Record associated requests and responses.
+Identify API hostnames and paths.
+Note HTTP versus HTTPS.
+Record authentication/session mechanisms without copying secrets
+into reports.
+15.4 Analysis questions
+Does the app communicate with expected domains?
+Does it use HTTPS?
+Are redirects handled safely?
+Are tokens sent in appropriate headers?
+Are sensitive values placed in URLs?
+Does the app expose unnecessary diagnostic endpoints?
+Are API responses validated?
+Deliverable: Traffic inventory with timestamp, feature, destination
+host, method, path, status and security observation. Redact tokens and
+personal data.
+---
+Lab 16 --- Burp Suite proxy configuration
+Objective: Route authorised emulator traffic through Burp and
+inspect requests.
+16.1 Start Burp
+Open Burp Suite.
+Create a temporary project.
+Select Burp defaults.
+Open Proxy → Proxy settings.
+Inspect or create a listener on port `8080`.
+16.2 Select the listener interface
+If Burp runs in Kali and the emulator runs on Windows, the listener must
+bind to an interface reachable from the emulator. Find Kali addresses:
+``` bash
+ip addr
+ip route
+```
+Use the Kali IP on the shared controlled network. Do not bind to an
+interface exposed to untrusted networks.
+16.3 Configure emulator proxy
+Use the emulator's network/proxy settings or Android proxy settings:
+Open emulator extended controls if available.
+Locate network/proxy settings.
+Configure the reachable Kali host address and port `8080`.
+Save and test against an approved endpoint.
+16.4 Verify
+Use the emulator browser to visit an approved test endpoint. Confirm the
+request appears in Burp Proxy → HTTP history.
+If no traffic appears, verify proxy address, listener binding, firewall,
+emulator settings, routing and whether the application actually makes a
+request.
+16.5 HTTPS certificate considerations
+Burp HTTPS inspection requires the client to trust Burp's CA. Android
+versions and apps differ in trust behaviour.
+Modern Android apps targeting newer API levels generally do not
+trust user-installed CA certificates by default unless Network
+Security Configuration permits it.
+Some apps use certificate pinning.
+Installing a CA does not automatically defeat pinning.
+Do not disable pinning or modify an app unless explicitly authorised
+and in scope.
+For an introductory exercise, demonstrate HTTP history and HTTPS
+connection metadata first. For HTTPS content inspection, use a
+purpose-built training app configured to trust the lab CA or an approved
+test build.
+16.6 Inspect a request
+For an approved request, inspect method, URL, headers, content type,
+parameters, status, response headers/body and session behaviour. Redact
+credentials and tokens from evidence.
+Learner challenge: Capture one authorised request/response and
+explain the data flow and two security questions requiring further
+investigation.
+---
+Lab 17 --- Wireshark packet analysis
+Objective: Correlate application actions with network-level packet
+observations.
+17.1 Identify interface
+``` bash
+ip addr
+```
+Start Wireshark and select the interface carrying the emulator/Kali
+traffic.
+17.2 Capture
+Start capture.
+Perform one known app action.
+Stop capture.
+Save as `mobile_lab_capture.pcapng`.
+17.3 Useful display filters
+``` text
+dns
+tcp
+tls
+http
+```
+Specific IP:
+``` text
+ip.addr == <TEST_IP>
+```
+17.4 Inspect DNS and TLS
+Record DNS query/response, response code, TLS Client Hello, visible SNI
+where available, TLS version and handshake outcome.
+Encrypted payloads are not readable merely because a packet capture
+exists.
+Learner challenge: Correlate one app action with DNS and TCP/TLS
+traffic. Explain what the capture proves and what it does not prove.
+---
+PART F --- ADVANCED ANALYSIS
+Lab 18 --- MobSF static analysis
+Objective: Generate an automated assessment and manually validate
+selected findings.
+Project: https://github.com/MobSF/Mobile-Security-Framework-MobSF
+Use a trusted release and the project's current documented deployment
+method. Do not expose MobSF to a public network.
+18.1 Check Docker
+``` bash
+docker --version
+docker compose version
+```
+If Docker is unavailable, follow current official Docker instructions
+for your Kali/Debian release. Avoid unreviewed installation scripts.
+18.2 Deploy MobSF
+Follow the official MobSF repository's current Docker instructions. A
+commonly documented quick-start pattern is:
+``` bash
+docker pull opensecurity/mobile-security-framework-mobsf
+docker run -it --rm -p 8000:8000 opensecurity/mobile-security-framework-mobsf:latest
+```
+Use the current project instructions and pin a version for repeatable
+delivery where possible. The `latest` tag is convenient but less
+reproducible.
+Open the local MobSF web interface at the address and port shown by the
+deployment.
+18.3 Upload and review
+Upload the authorised training APK.
+Wait for static analysis.
+Review app metadata, permissions, manifest, network security, code
+analysis, hardcoded strings, trackers, dependencies, cryptography
+and storage indicators.
+Export the report if available.
+18.4 Validate findings
+For each selected finding:
+Locate the evidence.
+Inspect it in JADX/APKTool.
+Determine whether it applies.
+Assess exploitability and impact.
+Record false positives or limitations.
+Recommend remediation.
+Learner challenge: Select three MobSF findings and classify each as
+confirmed, not applicable, inconclusive or requiring further dynamic
+testing.
+---
+Lab 19 --- Frida fundamentals
+Objective: Introduce dynamic instrumentation in an authorised
+training environment.
+Documentation: https://frida.re/docs/
+19.1 Understand architecture
+Explain Frida client, Frida server/Gadget, target process,
+instrumentation script and Java/native runtime interaction.
+19.2 Verify tools
+``` bash
+frida --version
+frida-ps --help
+```
+Install using official guidance. A common package installation is:
+``` bash
+python3 -m pip install frida-tools
+```
+Use a Python virtual environment if required by Kali's package
+management policy. Avoid overriding system-managed Python packages.
+19.3 Check emulator ABI
+``` bash
+adb shell getprop ro.product.cpu.abi
+```
+19.4 Match server
+For an authorised rooted/emulator environment, use the official Frida
+release matching the installed client version and emulator ABI. Do not
+use server binaries from unknown websites.
+19.5 Enumerate processes
+With a compatible, authorised Frida setup:
+``` bash
+frida-ps -U
+```
+If no device appears, validate ADB connectivity and Frida server status.
+19.6 Introductory instrumentation exercise
+Use a purpose-built test app and a harmless method chosen by the
+instructor. Observe a method invocation and explain process selection,
+script attachment, runtime observation, evidence collection and how
+instrumentation changes the test environment.
+Learner task: Document one controlled runtime observation and its
+limitations.
+---
+Lab 20 --- Objection fundamentals
+Objective: Understand how Objection assists runtime exploration of
+authorised mobile test apps.
+Project: https://github.com/sensepost/objection
+20.1 Verify installation
+``` bash
+objection --help
+```
+Install according to current project instructions, preferably in an
+isolated Python environment.
+20.2 Understand the workflow
+Objection relies on Frida. It does not remove the need for a compatible
+Frida setup and an appropriate target environment.
+20.3 Exploration areas
+For an app that is instrumentable in the prepared lab environment, use
+the installed Objection help and current documentation for supported
+launch/attach syntax.
+Possible areas:
+Application information
+Environment inspection
+Storage review
+Runtime method exploration
+Network-related configuration
+Root/emulator detection behaviour
+Learner task: Compare ADB, JADX, APKTool, Frida and Objection.
+Explain what each tool can and cannot establish.
+---
+Lab 21 --- Input validation and application behaviour
+Objective: Test input handling safely using a training application.
+Use only fields in the authorised test app. Try synthetic values:
+Empty input
+Very short input
+Maximum expected length
+Unexpected whitespace
+Unicode characters
+Special characters
+Invalid email format
+Out-of-range numeric value
+Observe client-side validation, server-side response, crashes/errors,
+unexpected output, logging and reflected values.
+Do not use destructive payloads or test production systems.
+Deliverable: Input, expected behaviour, observed behaviour, evidence
+and remediation table.
+---
+Lab 22 --- Evidence package and report
+Objective: Preserve reproducible evidence and produce a professional
+report.
+22.1 Create evidence directories
+``` bash
+mkdir -p ~/MobileSecurity/Reports/{Screenshots,APK_Metadata,Manifest,Static,Traffic,Dynamic}
+```
+22.2 Naming convention
+``` text
+LAB##_YYYYMMDD_EVIDENCE_DESCRIPTION
+```
+Examples:
+``` text
+LAB06_YYYYMMDD_device_properties.txt
+LAB10_YYYYMMDD_apk_sha256.txt
+LAB11_YYYYMMDD_manifest_review.txt
+LAB16_YYYYMMDD_burp_request_redacted.png
+LAB17_YYYYMMDD_dns_tls_capture.pcapng
+```
+22.3 Finding template
+For each finding record:
+Finding ID
+Title
+Severity
+Affected application/version
+OWASP mapping
+Description
+Evidence
+Reproduction steps
+Impact
+Likelihood
+Limitations
+Recommendation
+Retest result
+Use the organisation's agreed risk methodology. A scanner severity is
+not automatically the final business risk rating. Consider
+exploitability, prerequisites, affected data, user impact and
+compensating controls.
+---
+PART G --- TROUBLESHOOTING
+23. Emulator does not start
+Check:
+Is CPU virtualization enabled in firmware?
+Is Windows Hypervisor Platform configured as required by the
+installed Emulator?
+Does `emulator -accel-check` report acceleration?
+Is there enough RAM and disk?
+Is the system image compatible?
+Are emulator diagnostics available?
+Try a cold boot. If necessary, wipe AVD data after preserving evidence.
+Do not immediately disable VBS or Memory Integrity.
+24. ADB shows no devices
+On Windows:
+``` powershell
+adb kill-server
+adb start-server
+adb devices -l
+```
+On Kali:
+``` bash
+adb kill-server
+adb start-server
+adb devices -l
+```
+Ensure the command is using the intended ADB server and the emulator is
+running.
+25. ADB unauthorized
+Unlock the emulator.
+Check for debugging authorization prompts.
+Reconnect the ADB session.
+Restart the ADB server if required.
+Avoid deleting ADB keys without a clear reason.
+26. APK installation fails
+``` bash
+adb install -r target.apk
+```
+Record the full error. Verify APK integrity, minimum SDK, architecture,
+signature conflict, storage and split APK requirements.
+27. Kali cannot reach Burp
+``` bash
+ip addr
+ip route
+```
+Verify VirtualBox network mode, host/Kali reachability, listener
+binding, firewall, proxy address and port.
+28. HTTPS traffic is not visible
+Possible causes include proxy misconfiguration, app proxy bypass, user
+CA trust restrictions, certificate pinning, custom network stack or no
+request being made. Do not label it a pinning issue without evidence.
+29. JADX/APKTool output is incomplete
+Update from a trusted source.
+Verify APK hash.
+Check whether the APK is split.
+Inspect all DEX files.
+Compare tool outputs.
+Remember obfuscation and native code can limit reconstruction.
+30. Frida cannot attach
+Check client/server version compatibility, device ABI, server
+execution/permissions, ADB connectivity, process state and emulator/root
+constraints. Use official Frida documentation for version-specific
+setup.
+---
+PART H --- FIVE-DAY DELIVERY PLAN
+Day 1 --- Fundamentals and reconnaissance
+Android architecture exploration
+ADB setup and device enumeration
+Application installation and feature mapping
+Package and permission reconnaissance
+Attack surface inventory
+OWASP Mobile Top 10 mapping
+Initial assessment report
+Deliverable: Mobile application reconnaissance report.
+Day 2 --- APK analysis and static testing
+APK extraction and hashing
+APK archive structure
+Manifest review
+APKTool decoding
+JADX source review
+Hardcoded strings and endpoint discovery
+WebView and logging review
+Static finding validation
+Deliverable: APK static analysis report.
+Day 3 --- Dynamic testing and traffic analysis
+ADB application lifecycle
+Logcat analysis
+Runtime observation
+Emulator network configuration
+Burp proxy setup
+HTTP/HTTPS traffic review
+Wireshark DNS/TCP/TLS analysis
+Input validation exercises
+Deliverable: Dynamic testing and traffic evidence.
+Day 4 --- Advanced mobile testing
+MobSF deployment and static analysis
+Manual validation of automated findings
+Frida architecture and setup
+Runtime instrumentation
+Objection introduction
+Storage and runtime review
+Application configuration review
+Deliverable: Advanced testing evidence and validated findings.
+Day 5 --- Integrated assessment
+Full application reconnaissance
+Static assessment
+Dynamic assessment
+Network assessment
+OWASP mapping
+Risk rating
+Remediation recommendations
+Final report presentation
+Deliverable: Complete mobile application security assessment report.
+---
+PART I --- LEARNER ASSESSMENT
+31. Practical checklist
+Practical                Expected output
+---
+Create AVD               Running virtual Android device
+ADB connection           Device listed and shell access
+Install training APK     Application launches
+Device reconnaissance    OS/API/device information
+Package reconnaissance   Package/version information
+Permission review        Permission inventory
+Component review         Manifest component inventory
+APK extraction           APK and SHA-256 hash
+APKTool                  Decoded manifest/resources
+JADX                     Reconstructed source review
+Static search            Documented investigation leads
+Logcat                   Runtime evidence
+Burp                     Approved request/response evidence
+Wireshark                DNS/TCP/TLS observations
+MobSF                    Automated report and manual validation
+Frida                    Controlled runtime observation
+Final assessment         Risk-rated report
+32. Suggested grading rubric
+Area                             Weight
+---
+Environment setup and ADB           10%
+Reconnaissance                      15%
+Permissions and components          10%
+Static analysis                     20%
+Dynamic analysis                    15%
+Network traffic analysis            15%
+Findings and reporting              15%
+Total                      100%
+Learners should explain tool output, validate findings and provide
+evidence---not merely run commands.
+---
+PART J --- OFFICIAL REFERENCES
+Android Studio: https://developer.android.com/studio
+Android Emulator: https://developer.android.com/studio/run/emulator
+Android Virtual Device:
+https://developer.android.com/studio/run/managing-avds
+Android Debug Bridge: https://developer.android.com/tools/adb
+Android app manifest:
+https://developer.android.com/guide/topics/manifest/manifest-intro
+Android permissions:
+https://developer.android.com/guide/topics/permissions/overview
+Android Network Security Configuration:
+https://developer.android.com/privacy-and-security/security-config
+OWASP MASVS: https://mas.owasp.org/MASVS/
+OWASP MASTG: https://mas.owasp.org/MASTG/
+OWASP Mobile Top 10: https://owasp.org/www-project-mobile-top-10/
+JADX: https://github.com/skylot/jadx
+APKTool: https://apktool.org/
+MobSF: https://github.com/MobSF/Mobile-Security-Framework-MobSF
+Frida: https://frida.re/docs/
+Objection: https://github.com/sensepost/objection
+Burp Suite: https://portswigger.net/burp/documentation
+Wireshark: https://www.wireshark.org/docs/
+---
+APPENDIX A --- QUICK COMMAND REFERENCE
+Windows PowerShell
+``` powershell
+adb version
+adb devices -l
+adb shell getprop ro.build.version.release
+adb shell getprop ro.build.version.sdk
+adb install -r "C:\Lab\training.apk"
+adb logcat
+ipconfig
+```
+Kali Linux
+``` bash
+adb version
+adb devices -l
+adb shell pm list packages -3
+adb shell getprop ro.build.version.release
+adb shell dumpsys package <PACKAGE_NAME>
+adb shell pm path <PACKAGE_NAME>
+adb pull <APK_PATH> target.apk
+sha256sum target.apk
+apktool d target.apk -o target_decoded
+jadx-gui target.apk
+unzip -l target.apk
+ip addr
+ip route
+```
+Evidence workspace
+``` bash
+mkdir -p ~/MobileSecurity/{APK,Decoded,JADX,Traffic,Reports,Evidence}
+```
+---
+APPENDIX B --- PRE-CLASS READINESS CHECKLIST
+[ ] Android Studio installed on Windows.
+[ ] Android SDK installed.
+[ ] Platform-Tools installed.
+[ ] Android Emulator installed.
+[ ] AVD created and booted.
+[ ] Emulator acceleration verified.
+[ ] Kali VM boots successfully.
+[ ] Kali security tools verified.
+[ ] ADB connection tested.
+[ ] Approved training APK available.
+[ ] APK hash recorded.
+[ ] Burp listener tested.
+[ ] Emulator-to-Kali network path tested.
+[ ] Wireshark capture tested.
+[ ] MobSF deployment tested if included.
+[ ] Frida setup tested if included.
+[ ] Clean emulator snapshot available.
+[ ] Synthetic test data prepared.
+[ ] Scope and authorisation confirmed.
+---
+Instructor note
+This manual is modular. Complete Android Studio, AVD and ADB before
+beginning application assessment. Validate the core workflow first, then
+add MobSF, Frida and Objection. Tool versions, Android images, package
+availability and security behaviour change over time. Record exact
+versions used so learners can reproduce the results.
